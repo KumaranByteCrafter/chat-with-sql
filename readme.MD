@@ -146,4 +146,12 @@ This flow ensures safe execution, consistent performance, and a persistent user 
 - **Determinism:** Temperature is set to 0 to avoid unpredictable SQL generation.  
 - **Performance:** Database connections are cached.  
 - **Scalability:** Supports both local and remote databases.  
-- **Maintainability:** Clear separation of LLM, Database, and Execution layers.  
+- **Maintainability:** Clear separation of LLM, Database, and Execution layers. 
+
+## 🌐 Live Application
+
+The application is deployed and accessible at:  
+👉 https://chat-db-sql.streamlit.app/
+
+Users can interact with the application directly from the browser.
+
