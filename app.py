@@ -8,9 +8,12 @@ from langchain_community.utilities import SQLDatabase
 from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
 
-#app ui
-st.set_page_config(page_title="Chat with SQL Database")
-st.title("Chat with SQL Database")
+
+# ============================================================
+# App UI
+# ============================================================
+st.set_page_config(page_title="Chat with SQL Database", page_icon="🦜")
+st.title("🦜 Chat with SQL Database")
 
 LOCALDB = "USE_LOCALDB"
 MYSQL = "USE_MYSQL"
@@ -20,10 +23,7 @@ radio_opt = [
     "Connect to MySQL Database",
 ]
 
-selected_opt = st.sidebar.radio(
-    "Choose the DB which you want to chat",
-    radio_opt,
-)
+selected_opt = st.sidebar.radio("Choose Database", radio_opt)
 
 if radio_opt.index(selected_opt) == 1:
     db_uri = MYSQL
@@ -37,10 +37,9 @@ else:
 api_key = st.sidebar.text_input("Groq API Key", type="password")
 
 
-# llm Configuration
-
-# llm Configuration
-
+# ============================================================
+# LLM Configuration
+# ============================================================
 llm = None
 if api_key:
     llm = ChatGroq(
@@ -49,11 +48,12 @@ if api_key:
         temperature=0
     )
 else:
-    st.info("🔑 Please enter your Groq API Key in the sidebar to start chatting.")
+    st.info("🔑 Enter Groq API Key to start chatting.")
 
 
-
-# db Configuration
+# ============================================================
+# Database Configuration
+# ============================================================
 @st.cache_resource(ttl=2 * 60 * 60)
 def configure_db(
     db_uri,
@@ -70,8 +70,7 @@ def configure_db(
         )
         engine = create_engine("sqlite:///", creator=creator)
         return SQLDatabase(engine), engine
-
-    elif db_uri == MYSQL:
+    else:
         if not (mysql_host and mysql_user and mysql_password and mysql_db):
             st.error("Please provide all MySQL connection details.")
             st.stop()
@@ -94,20 +93,90 @@ else:
     db, engine = configure_db(db_uri)
 
 
+# ============================================================
+# Build Database Schema for Prompt
+# ============================================================
+def get_db_schema_text(engine, db_uri, tables):
+    schema_lines = []
 
-# Prompt
+    for table in tables:
+        try:
+            if db_uri == LOCALDB:
+                df = pd.read_sql_query(
+                    f"PRAGMA table_info('{table}')", engine
+                )
+                cols = df["name"].tolist()
+            else:
+                df = pd.read_sql_query(
+                    f"SHOW COLUMNS FROM {table}", engine
+                )
+                cols = df["Field"].tolist()
 
+            if cols:
+                schema_lines.append(f"{table}({', '.join(cols)})")
+
+        except Exception:
+            pass
+
+    return "\n".join(schema_lines)
+
+
+# ============================================================
+# Display Database Schema (Clean Table UI)
+# ============================================================
+st.subheader("📊 Database Schema")
+
+try:
+    tables = db.get_usable_table_names()
+
+    if not tables:
+        st.warning("No tables found in database.")
+    else:
+        for table in tables:
+            with st.expander(f"📁 Table: {table}", expanded=False):
+
+                if db_uri == LOCALDB:
+                    schema_df = pd.read_sql_query(
+                        f"PRAGMA table_info('{table}')", engine
+                    )
+                    schema_df = schema_df.rename(columns={
+                        "name": "Column",
+                        "type": "Data Type",
+                        "notnull": "Not Null",
+                        "pk": "Primary Key"
+                    })[["Column", "Data Type", "Not Null", "Primary Key"]]
+
+                else:
+                    schema_df = pd.read_sql_query(
+                        f"SHOW COLUMNS FROM {table}", engine
+                    )
+                    schema_df = schema_df.rename(columns={
+                        "Field": "Column",
+                        "Type": "Data Type",
+                        "Null": "Nullable",
+                        "Key": "Key"
+                    })[["Column", "Data Type", "Nullable", "Key"]]
+
+                st.dataframe(schema_df, use_container_width=True)
+
+except Exception as e:
+    st.error("Unable to load database schema.")
+    st.exception(e)
+
+
+# ============================================================
+# Prompt Template
+# ============================================================
 SQL_PROMPT = PromptTemplate(
-    input_variables=["question", "tables"],
+    input_variables=["question", "schema"],
     template="""
 You are a SQL expert.
+Use ONLY the column names exactly as provided in the schema.
 Generate ONLY a valid SQL SELECT query.
-Do not explain anything.
-Do not add markdown.
-Do not add comments.
+No explanation. No markdown. No comments.
 
-Available tables:
-{tables}
+Schema:
+{schema}
 
 User question:
 {question}
@@ -117,51 +186,53 @@ SQL:
 )
 
 
-
-# session state initialization
-
+# ============================================================
+# Session State
+# ============================================================
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 if "results" not in st.session_state:
-    st.session_state.results = []   # store dataframe
-
+    st.session_state.results = []
 
 if st.sidebar.button("Clear Chat"):
     st.session_state.messages = []
     st.session_state.results = []
 
 
-
-# render previous Chat + tables
-for i, msg in enumerate(st.session_state.messages):
+# ============================================================
+# Render Previous Chat
+# ============================================================
+for msg in st.session_state.messages:
     st.chat_message(msg["role"]).write(msg["content"])
-
-    # if message has a table attached → render it
     if msg.get("has_table"):
         df = st.session_state.results[msg["table_index"]]
-        st.dataframe(df, width="stretch")
+        st.dataframe(df, use_container_width=True)
 
 
-
-# chat input
+# ============================================================
+# Chat Input
+# ============================================================
 user_query = st.chat_input("Ask a question about your data")
 
-if user_query and api_key:
-    # store user message
+if user_query:
+
+    if not api_key:
+        st.info("🔑 Please enter Groq API Key.")
+        st.stop()
+
     st.session_state.messages.append(
         {"role": "user", "content": user_query}
     )
-
     st.chat_message("user").write(user_query)
 
     with st.chat_message("assistant"):
         try:
-            tables = db.get_usable_table_names()
+            schema_text = get_db_schema_text(engine, db_uri, tables)
 
             prompt = SQL_PROMPT.format(
                 question=user_query,
-                tables=", ".join(tables),
+                schema=schema_text,
             )
 
             sql = llm.invoke(prompt).content.strip()
@@ -171,7 +242,6 @@ if user_query and api_key:
                 st.error("Only SELECT queries are allowed.")
                 st.stop()
 
-            # execute query
             df = pd.read_sql_query(sql, engine)
 
             if df.empty:
@@ -180,14 +250,11 @@ if user_query and api_key:
                     {"role": "assistant", "content": "No results found."}
                 )
             else:
-                # save dataframe
                 table_index = len(st.session_state.results)
                 st.session_state.results.append(df)
 
-                # render table
-                st.dataframe(df, width="stretch")
+                st.dataframe(df, use_container_width=True)
 
-                # store assistant message with table reference
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": "Result:",
@@ -196,4 +263,5 @@ if user_query and api_key:
                 })
 
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error("❌ Query execution failed.")
+            st.exception(e)
